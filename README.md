@@ -1,10 +1,6 @@
-# Targeted-Marketing-Customer-Segmentation-and-Classification
-Capstone project on customer segmentation using RFM, CLV, clustering, and ML models
-
-# Customer-Segmentation-Project
-Capstone project on customer segmentation using RFM, CLV, clustering, and ML models
 # Targeted Marketing: Customer Segmentation & Classification Strategies
-
+ Capstone project on customer segmentation using RFM, CLV, clustering, and ML models
+ 
 ## 👥 Authors
 - Aakanksha Singh
 - Joyce Talluri
