@@ -1,0 +1,682 @@
+---
+title: "Clustering & Classification"
+author: "JAS"
+date: "2024-11-13"
+output: html_document
+---
+
+```{r}
+
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(caret)
+library(nnet)
+library(pROC)
+library(rpart)
+library(randomForest)
+clv <- read_excel("final dataset 1.xlsx", sheet = 3)
+head(clv)
+
+```
+
+
+```{r}
+head(clv)
+```
+
+
+
+
+
+```{r}
+# Add a RepeatRate column directly using a one-liner
+clv$repeat_rate <- ifelse(clv$`No of transactions` > 1, 
+                          (clv$`No of transactions` - 1) / clv$`No of transactions`, 
+                          0)
+head(clv)
+
+```
+
+
+```{r}
+#Churn Rate
+clv$churn_rate <- 1 - clv$repeat_rate
+head(clv, 20)
+```
+
+
+```{r}
+# Customer Life Time Value (CLTV)
+clv$CLV <- (clv$`Average purchase value` * clv$`purchase frequency`) * (mean(clv$`Transaction days`)/nrow(clv))
+head (clv,20)
+```
+
+# CLUSTERING
+
+```{r}
+# RFM_Model
+# Recency
+Combined_data <- read_excel("C:/Users/joyce/OneDrive/Desktop/Capstone/final dataset 1.xlsx", sheet = 1)
+
+Combined_data <- Combined_data %>%
+  mutate(Transaction_day=day(Transaction_Date))
+
+RFM_Recency <- Combined_data %>%
+  group_by(CustomerID) %>%
+  summarize(Last_Purchase_Day = max(Transaction_day, na.rm = TRUE)) %>%
+  ungroup()
+
+latest_date <- max(RFM_Recency$Last_Purchase_Day, na.rm = TRUE)
+RFM_Recency <- RFM_Recency %>%
+  mutate(Recency = as.numeric(latest_date - Last_Purchase_Day))
+
+# Create a unique dataframe for CustomerID
+data_user <- data.frame(CustomerID = unique(Combined_data$CustomerID))
+data_user <- left_join(data_user, RFM_Recency %>% dplyr::select(CustomerID,Recency), by = 'CustomerID')
+
+head(data_user)
+```
+
+```{r}
+# Frequency
+# Group by CustomerID and Frequency for each customer
+RFM_Frequency <- Combined_data %>%
+  group_by(CustomerID) %>%
+  summarize(Frequency = n()) %>%
+  ungroup()
+
+# Merge the frequency data with the existing df_user dataframe
+data_user <- left_join(data_user, RFM_Frequency, by = "CustomerID")
+
+head(data_user)
+```
+
+```{r}
+# Monetary
+
+Combined_data <- Combined_data %>%
+  mutate(Invoice = ifelse(
+    Coupon_Status == "Used",
+    ((Quantity * Avg_Price) * (1 - Discount_pct / 100) * (1 + GST)) + Delivery_Charges,
+    ((Quantity * Avg_Price) * (1 + GST)) + Delivery_Charges
+  ))
+
+# Total invoice (Monetary)/ Total purchase amuont for each customer
+RFM_Monetary <- Combined_data %>%
+  group_by(CustomerID) %>%
+  summarize(Monetary = sum(Invoice, na.rm = TRUE)) %>%
+  ungroup()
+
+data_user <- left_join(data_user, RFM_Monetary, by = "CustomerID")
+head(data_user)
+```
+
+```{r}
+#clustering ,
+
+data_cluster <- data_user[,c("Recency", "Frequency", "Monetary")]
+
+
+head(data_cluster)
+```
+
+
+```{r}
+set.seed(666)
+#elbow method for number of clusters
+standardized_data <- scale(data_cluster)
+
+wss<- vector("numeric", length = 10)
+for (k in 1:10) {
+  cr <- kmeans(data_cluster, centers = k, nstart = 10)
+  wss[k] <- cr$tot.withinss
+}
+
+elbow_data  <- data.frame(k = 1:10, WSS = wss)
+
+ggplot(elbow_data, aes(x = k, y = WSS)) +
+  geom_line(color = "lightblue") +
+  geom_point(color = "darkred") +
+  labs(title = "No of Clusters (K)",
+       x = "K",
+       y = "WSS") +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+#k-means clustering
+no_clusters <- 3
+ 
+cluster_mod <- kmeans(standardized_data, centers = no_clusters, nstart = 50)
+
+data_cluster$Cluster <- cluster_mod$cluster
+data_cluster$CustomerID <- data_user$CustomerID
+head(data_cluster,20)
+```
+
+
+```{r}
+nd <- merge(clv, data_cluster, by = "CustomerID")
+head(nd)
+```
+
+
+#To visualize all combinations of the four variables, a pairwise scatterplot matrix is helpful. This approach shows the relationships between all variables, with points color-coded by Cluster.
+
+```{r}
+#library(GGally)
+
+# Pairwise scatterplot matrix
+#ggpairs(nd, columns = c("Recency", "Frequency", "Monetary", "CLV"), 
+ #       aes(color = as.factor(Cluster), alpha = 0.7)) +
+#  theme_minimal() +
+ # labs(title = "Pairwise Scatterplot of Clusters")
+
+```
+
+```{r}
+head(nd)
+```
+
+```{r}
+head(nd)
+```
+
+
+# PROFILING
+
+
+```{r}
+# For each cluster, calculate statistics for each attribute to profile the clusters.
+# For numerical attributes, use mean.
+# For categorical attributes, count the frequency of each category.
+
+# Assuming merged_profile is your dataset
+
+# Profiling for numerical attributes
+n_pro2 <- nd %>%
+  group_by(Cluster) %>%
+  summarise(
+    Quantity = mean(Quantity, na.rm = TRUE),
+    `Tenure Months` = mean(`Tenure Months`, na.rm = TRUE),
+    `Average purchase value` = mean(`Average purchase value`, na.rm = TRUE),
+    Recency = mean(Recency, na.rm = TRUE),
+    Frequency = mean(Frequency, na.rm = TRUE),
+    Monetary = mean(Monetary, na.rm = TRUE),
+    CLV = mean(CLV, na.rm = TRUE)
+  )
+
+# Function to calculate mode (most frequent value)
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}  
+
+# Profiling for categorical attributes
+cat_pro2 <- nd %>%
+  group_by(Cluster) %>%
+  summarise(
+    Location = Mode(Location),
+    Gender = Mode(Gender),
+    `Discount pr` = Mode(`Discount pr`),
+  )
+
+# Combine the numerical and categorical profiles into one data frame
+copro2 <- merge(n_pro2, cat_pro2, by = "Cluster")
+print(copro2)
+
+```
+
+
+# CLASSIFICATION
+
+```{r}
+head(nd)
+```
+
+
+```{r}
+table(nd$Cluster)
+```
+
+## Upsampling
+
+```{r}
+nd$Cluster <- as.factor(nd$Cluster)
+cs_up <- caret::upSample(nd, nd$Cluster, list = TRUE)$x
+table(cs_up$Cluster)
+```
+
+```{r}
+#library(ROSE)
+
+#nd$Cluster <- as.factor(nd$Cluster)
+
+#names(nd) <- gsub(" ", "_", names(nd))  # Replace spaces with underscores
+
+#oversampled_data <- ovun.sample(Cluster ~ ., data = nd, method = "over", N = max(table(nd$Cluster)) * 2)$data
+
+# Check the new class distribution after oversampling
+#table(oversampled_data$Cluster)
+
+```
+
+
+## Data Partioning
+
+```{r}
+set.seed(7)
+training_rows <- caret::createDataPartition(cs_up$Cluster, p = 0.7, list = FALSE)
+train_data <- cs_up[training_rows, ]
+holdout_data <- cs_up[-training_rows, ]
+```
+
+
+
+## Model-1: Multinomial Regression
+
+
+```{r}
+library(nnet)
+
+# Fit a multinomial logistic regression model
+model_full <- multinom(Cluster ~ ., data = cs_up)
+
+# Perform backward selection based on AIC
+#model_selected <- step(model_full, direction = "backward", trace = FALSE)
+#summary(model_selected)
+```
+
+```{r}
+head(train_data)
+```
+
+
+
+```{r}
+
+model_1 <- multinom(Cluster ~ Quantity + `Product Category` + Gender + Location + `Tenure Months`, data = train_data)
+summary(model_1)
+```
+
+```{r}
+predicted_classes <- predict(model_1, newdata = holdout_data)
+holdout_data$pred <- predicted_classes
+```
+
+```{r}
+cm_reg <- caret::confusionMatrix(holdout_data$Cluster, holdout_data$pred)
+cm_reg
+```
+
+
+```{r}
+
+response <- factor(holdout_data$Cluster)
+predictor <- factor(holdout_data$pred, levels = levels(response))
+
+roc_multiclass <- pROC::multiclass.roc(response = as.numeric(holdout_data$Cluster), predictor = as.numeric(holdout_data$pred))
+
+# Print the AUC value
+auc_value <- pROC::auc(roc_multiclass)
+print(paste("Multiclass AUC:", auc_value))
+```
+
+
+```{r}
+# Extract all pairwise ROC curves
+roc_curves <- roc_multiclass$rocs
+
+# Plot the first pairwise ROC curve
+plot(roc_curves[[1]], col = "red", main = "Multiclass ROC Curve", legacy.axes = TRUE)
+
+# Add additional ROC curves to the same plot
+for (i in 2:length(roc_curves)) {
+  plot(roc_curves[[i]], col = i + 1, add = TRUE)
+}
+
+# Add legend
+legend("bottomright", legend = paste("Pair", 1:length(roc_curves)), col = 2:(length(roc_curves) + 1), lwd = 2)
+```
+
+
+## Model-2: Classification Trees
+
+```{r}
+
+library(rpart.plot)
+model_2 <- rpart(Cluster ~ Quantity + `Product Category` + Gender + Location + `Tenure Months`, data = train_data, method = "class", minsplit =10, cp=0.06)
+
+# Predict the response for the test dataset
+y_pred_dt <- predict(model_2, newdata = holdout_data, type = "class")
+
+# Calculate Model Accuracy
+accuracy <- mean(y_pred_dt == holdout_data$Cluster)
+cat(sprintf("Accuracy: %.2f\n", accuracy))
+
+rpart.plot(model_2, extra = 1, fallen.leaves = FALSE)
+```
+
+
+```{r}
+holdout_data$pred_cart <- y_pred_dt
+holdout_data$pred_cart <- as.factor(holdout_data$pred_cart)
+```
+
+
+```{r}
+cm_cart <- caret::confusionMatrix(holdout_data$Cluster, holdout_data$pred_cart)
+cm_cart
+```
+
+```{r}
+roc_multiclass2 <- pROC::multiclass.roc(response = holdout_data$Cluster, predictor = as.numeric(holdout_data$pred_cart))
+
+# Print the AUC value
+auc_value <- pROC::auc(roc_multiclass2)
+print(paste("Multiclass AUC:", auc_value))
+```
+
+
+```{r}
+ #Extract all pairwise ROC curves
+roc_curves2 <- roc_multiclass2$rocs
+
+# Plot the first pairwise ROC curve
+plot(roc_curves2[[1]], col = "red", main = "Multiclass ROC Curve", legacy.axes = TRUE)
+
+# Add additional ROC curves to the same plot
+for (i in 2:length(roc_curves2)) {
+  plot(roc_curves2[[i]], col = i + 1, add = TRUE)
+}
+
+# Add legend
+legend("bottomright", legend = paste("Pair", 1:length(roc_curves2)), col = 2:(length(roc_curves2) + 1), lwd = 2)
+```
+
+## Model-3: Random Forest
+
+```{r}
+colnames(train_data) <- make.names(colnames(train_data))
+colnames(holdout_data) <- make.names(colnames(holdout_data))
+
+head(train_data)
+```
+
+
+```{r}
+
+library(randomForest)
+
+model_3 <- randomForest(Cluster ~ Quantity + Gender + Location + Product.Category + Tenure.Months, data = train_data, ntree=500, mtry=4, nodesize=5, importance = TRUE)
+model_3
+```
+
+```{r}
+pred_rf <- predict(model_3, newdata = holdout_data)
+
+holdout_rf <- data.frame(actual = holdout_data$Cluster, predicted = pred_rf)
+```
+
+```{r}
+cm_rf <- caret::confusionMatrix(pred_rf, holdout_data$Cluster)
+cm_rf
+```
+
+```{r}
+roc_multiclass3 <- pROC::multiclass.roc(response = holdout_data$Cluster, predictor = as.numeric(pred_rf))
+
+# Print the AUC value
+auc_value <- pROC::auc(roc_multiclass3)
+print(paste("Multiclass AUC:", auc_value))
+```
+
+
+```{r}
+ #Extract all pairwise ROC curves
+roc_curves3 <- roc_multiclass3$rocs
+
+# Plot the first pairwise ROC curve
+plot(roc_curves3[[1]], col = "red", main = "Multiclass ROC Curve", legacy.axes = TRUE)
+
+# Add additional ROC curves to the same plot
+for (i in 2:length(roc_curves3)) {
+  plot(roc_curves3[[i]], col = i + 1, add = TRUE)
+}
+
+# Add legend
+legend("bottomright", legend = paste("Pair", 1:length(roc_curves3)), col = 2:(length(roc_curves3) + 1), lwd = 2) 
+```
+
+## Model-4: KNN
+
+```{r}
+
+library(caret)
+
+model_4 <- train(Cluster ~ Quantity + Gender + Location + Product.Category + Tenure.Months, data = train_data, method = "knn", preProcess= c("center", "scale"), tuneGrid = expand.grid(k=3), trControl = trainControl(method = "none"))
+```
+
+
+```{r}
+holdout_data$pred_knn <- predict(model_4, holdout_data)
+
+cm_knn <- confusionMatrix(holdout_data$pred_knn, holdout_data$Cluster)
+cm_knn
+```
+
+```{r}
+roc_multiclass4 <- pROC::multiclass.roc(response = holdout_data$Cluster, predictor = as.numeric(holdout_data$pred_knn))
+
+# Print the AUC value
+auc_value <- pROC::auc(roc_multiclass4)
+print(paste("Multiclass AUC:", auc_value))
+```
+
+
+```{r}
+ #Extract all pairwise ROC curves
+roc_curves4 <- roc_multiclass4$rocs
+
+# Plot the first pairwise ROC curve
+plot(roc_curves4[[1]], col = "red", main = "Multiclass ROC Curve", legacy.axes = TRUE)
+
+# Add additional ROC curves to the same plot
+for (i in 2:length(roc_curves4)) {
+  plot(roc_curves4[[i]], col = i + 1, add = TRUE)
+}
+
+# Add legend
+legend("bottomright", legend = paste("Pair", 1:length(roc_curves4)), col = 2:(length(roc_curves4) + 1), lwd = 2) 
+```
+
+## Model-5: XGBoost
+
+
+```{r}
+library(xgboost)
+library(caret)
+
+# Ensure the target variable is a factor
+train_data$Cluster <- as.factor(train_data$Cluster)
+
+# One-hot encode categorical variables and create a numeric matrix
+x_train <- model.matrix(~ Quantity + Gender + Location + Product.Category + Tenure.Months  - 1, data = train_data)
+x_holdout <- model.matrix(~ Quantity + Gender + Location + Product.Category + Tenure.Months - 1, data = holdout_data)
+
+# Convert the target variable to numeric format for XGBoost (0-based indexing)
+y_train <- as.numeric(train_data$Cluster) - 1
+
+# Check if the matrix is numeric
+str(x_train)  # Ensure all columns are numeric
+
+# Set XGBoost parameters for multiclass classification
+params <- list(
+  objective = "multi:softprob",  # Softprob returns probabilities for each class
+  num_class = 3,                # Number of classes
+  eval_metric = "mlogloss",     # Log-loss for multiclass classification
+  max_depth = 6,                # Depth of the trees
+  eta = 0.3,                    # Learning rate
+  gamma = 0,                    # Minimum loss reduction
+  colsample_bytree = 0.8,       # Subsample ratio of columns
+  subsample = 0.8               # Subsample ratio of rows
+)
+
+# Convert data to DMatrix format for XGBoost
+dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+
+# Train the XGBoost model
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,  # Number of boosting iterations
+  verbose = 1
+)
+
+# Print the model summary
+print(xgb_model)
+```
+
+
+
+```{r}
+# Ensure consistent column names between training and holdout matrices
+missing_features <- setdiff(colnames(x_train), colnames(x_holdout))
+if (length(missing_features) > 0) {
+# Add missing columns to x_holdout and fill with 0
+  for (feature in missing_features) {
+    x_holdout <- cbind(x_holdout, setNames(data.frame(rep(0, nrow(x_holdout))), feature))
+  }
+}
+
+# Convert x_holdout to a numeric matrix and reorder columns to match x_train
+x_holdout <- as.matrix(x_holdout[, colnames(x_train), drop = FALSE])
+
+# Confirm feature name consistency
+if (!all(colnames(x_train) == colnames(x_holdout))) {
+  stop("Mismatch in feature names still exists after alignment!")
+}
+
+# Predict class probabilities for the holdout data
+pred_probs <- predict(xgb_model, xgb.DMatrix(data = x_holdout))
+
+# Convert probabilities to predicted classes (highest probability)
+pred_classes <- max.col(matrix(pred_probs, ncol = 3, byrow = TRUE)) - 1
+
+# Convert predicted classes back to original factor levels (1, 2, 3)
+holdout_data$pred_classes <- factor(pred_classes + 1, levels = c(1, 2, 3))
+holdout_data$Cluster <- factor(holdout_data$Cluster, levels = c(1, 2, 3))
+
+# Generate confusion matrix
+conf_matrix <- confusionMatrix(holdout_data$pred_classes, holdout_data$Cluster)
+
+# Print confusion matrix
+print(conf_matrix)
+```
+
+
+```{r}
+roc_multiclass5 <- pROC::multiclass.roc(response = holdout_data$Cluster, predictor = as.numeric(holdout_data$pred_classes))
+
+# Print the AUC value
+auc_value <- pROC::auc(roc_multiclass5)
+print(paste("Multiclass AUC:", auc_value))
+```
+
+
+```{r}
+ #Extract all pairwise ROC curves
+roc_curves5 <- roc_multiclass5$rocs
+
+# Plot the first pairwise ROC curve
+plot(roc_curves5[[1]], col = "red", main = "Multiclass ROC Curve", legacy.axes = TRUE)
+
+# Add additional ROC curves to the same plot
+for (i in 2:length(roc_curves5)) {
+  plot(roc_curves5[[i]], col = i + 1, add = TRUE)
+}
+
+# Add legend
+legend("bottomright", legend = paste("Pair", 1:length(roc_curves5)), col = 2:(length(roc_curves5) + 1), lwd = 2) 
+```
+
+```{r}
+# Load necessary libraries for plotting
+library(xgboost)
+library(ggplot2)
+
+# Calculate feature importance
+importance_matrix <- xgb.importance(model = xgb_model, feature_names = colnames(x_train))
+
+# Print feature importance matrix
+print(importance_matrix)
+
+# Plot feature importance using XGBoost's built-in function
+xgb.plot.importance(importance_matrix, top_n = 10, measure = "Gain")  # Top 10 features by Gain
+
+```
+
+
+# Market Basket Analysis
+
+```{r}
+library(arules)
+library(arulesViz)
+library(readxl)
+```
+
+```{r}
+# Load necessary libraries
+  # Required for reading Excel files
+
+# Load the dataset
+data1 <- read_excel("C:/Users/joyce/OneDrive/Desktop/Capstone/final dataset 1.xlsx", sheet = 1)  # Replace with your dataset path
+
+# Preprocess data: ensure necessary columns are present
+data1$Product_Category <- as.character(data1$Product_Category)
+data1$Transaction_ID <- as.factor(data1$Transaction_ID)
+
+# Convert to transactions
+transactions <- as(split(data1$Product_Category, data1$Transaction_ID), "transactions")
+
+# Generate association rules
+rules <- apriori(transactions, parameter = list(supp = 0.01, conf = 0.5))
+
+# Inspect the rules
+inspect(rules)
+
+# Sort rules by 'lift' in descending order
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+
+# Inspect sorted rules
+inspect(sorted_rules)
+
+# Save sorted rules to a CSV file
+write(sorted_rules, file = "sorted_association_rules.csv", sep = ",", quote = TRUE, row.names = FALSE)
+
+# Plot the rules
+plot(sorted_rules, method = "graph", engine = "htmlwidget")
+```
+
+
+```{r}
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+write(sorted_rules, file = "sorted_association_rules.csv", sep = ",", quote = TRUE, row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
